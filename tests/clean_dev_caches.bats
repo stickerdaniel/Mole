@@ -677,7 +677,6 @@ EOF
 
     [ "$status" -eq 0 ]
     [[ "$output" == *"npm cache directory|$HOME/.npm/_cacache/*"* ]] || return 1
-    [[ "$output" == *"npm npx cache|$HOME/.npm/_npx/*"* ]] || return 1
     [[ "$output" == *"npm logs|$HOME/.npm/_logs/*"* ]] || return 1
     [[ "$output" == *"npm prebuilds|$HOME/.npm/_prebuilds/*"* ]]
 }
@@ -1100,7 +1099,6 @@ EOF
     [ "$status" -eq 0 ]
     [[ "$output" == *"npm cache directory|$HOME/.npm/_cacache/*"* ]] || return 1
     [[ "$output" == *"npm cache directory (custom path)|/tmp/mole-custom-npm-cache/_cacache/*"* ]] || return 1
-    [[ "$output" == *"npm npx cache (custom path)|/tmp/mole-custom-npm-cache/_npx/*"* ]] || return 1
     [[ "$output" == *"npm logs (custom path)|/tmp/mole-custom-npm-cache/_logs/*"* ]] || return 1
     [[ "$output" == *"npm prebuilds (custom path)|/tmp/mole-custom-npm-cache/_prebuilds/*"* ]]
 }

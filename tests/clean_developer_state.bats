@@ -133,3 +133,92 @@ EOF
 @test "cleanup sink protects Jupyter runtime without blocking uninstall" {
     probe_developer_state jupyter sink
 }
+
+@test "npm cleanup preserves runtime resources in default and custom npx stores" {
+    command -v node >/dev/null 2>&1 || skip "node is required for the running package fixture"
+
+    run env HOME="$HOME" PROJECT_ROOT="$PROJECT_ROOT" NODE_BIN="$(command -v node)" \
+        MOLE_TEST_NO_AUTH=1 python3 -I <<'PY'
+import os
+from pathlib import Path
+import select
+import subprocess
+
+home = Path(os.environ['HOME'])
+roots = [home / '.npm', home / 'custom npm cache']
+packages = []
+for root in roots:
+    package = root / '_npx/fixture/node_modules/fixture'
+    package.mkdir(parents=True)
+    (package / 'resource.txt').write_text('RESOURCE_OK')
+    (package / 'lazy.cjs').write_text("module.exports = 'MODULE_OK'")
+    packages.append(str(package))
+    for directory in ['_cacache', '_logs', '_prebuilds']:
+        target = root / directory
+        target.mkdir()
+        (target / 'disposable').write_text('cache')
+
+fake_bin = home / 'bin'
+fake_bin.mkdir()
+(fake_bin / 'npm').write_text('''#!/bin/bash
+[[ "$*" == "config get cache" ]] && printf '%s\\n' "$HOME/custom npm cache"
+exit 0
+''')
+(fake_bin / 'npm').chmod(0o755)
+
+worker = home / 'worker.cjs'
+worker.write_text('''
+const fs = require('node:fs');
+const roots = process.argv.slice(2);
+setTimeout(() => process.exit(2), 60000).unref();
+require('node:readline').createInterface({input: process.stdin}).on('line', cmd => {
+    try {
+        console.log(roots.map(root => cmd === 'module' ? require(root + '/lazy.cjs') :
+            fs.readFileSync(root + '/resource.txt', 'utf8')).join(','));
+    } catch (error) { console.log(error.code); }
+});
+''')
+child = subprocess.Popen([os.environ['NODE_BIN'], str(worker), *packages],
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+try:
+    def request(command):
+        child.stdin.write((command + '\n').encode())
+        child.stdin.flush()
+        assert select.select([child.stdout], [], [], 10)[0], 'response timeout'
+        return child.stdout.readline().decode().strip()
+
+    assert request('resource') == 'RESOURCE_OK,RESOURCE_OK'
+    # Only npm's external command is stubbed; the cleanup and deletion guards
+    # are real. The sibling caches prove the deletion path was exercised.
+    cleanup = '''
+source "$PROJECT_ROOT/bin/clean.sh"
+clean_pnpm_stores() { :; }
+clean_corepack_cache() { :; }
+clean_dev_npm
+'''
+    for dry_run in ['1', '0']:
+        result = subprocess.run(['/bin/bash', '--noprofile', '--norc', '-c', cleanup],
+                                env={**os.environ, 'PATH': f'{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin',
+                                     'MOLE_DRY_RUN': dry_run},
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert 'npx' not in result.stdout, result.stdout
+        assert request('resource') == 'RESOURCE_OK,RESOURCE_OK'
+        for root in roots:
+            for directory in ['_cacache', '_logs', '_prebuilds']:
+                assert (root / directory / 'disposable').exists() == (dry_run == '1')
+    assert request('module') == 'MODULE_OK,MODULE_OK'
+    print('Runtime resources and lazy modules remain usable; sibling caches are cleaned')
+finally:
+    child.terminate()
+    try:
+        child.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        child.kill()
+        child.wait(timeout=5)
+PY
+    [ "$status" -eq 0 ] || {
+        echo "$output"
+        return 1
+    }
+}
